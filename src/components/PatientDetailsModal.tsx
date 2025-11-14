@@ -1,176 +1,248 @@
-import { useMemo, useState } from "react";
-import { useBoard, Patient } from "../store/board";
+import { useState, useMemo } from "react";
+import { useBoard, Patient, Replacement, Fraction } from "../store/board";
+import AddReplacementModal from "./AddReplacementModal";
 
-function fmt(dtISO: string) {
-  const d = new Date(dtISO);
-  const dia = d.toLocaleDateString(undefined, { day: "2-digit", month: "2-digit", year: "numeric" });
-  const hora = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  return `${dia} ${hora}`;
+/* ---------- Helpers ---------- */
+function fmt(dt: string) {
+  const d = new Date(dt);
+  return (
+    d.toLocaleDateString("pt-BR") +
+    " " +
+    d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+  );
 }
 
-function nextRoundedTime(step = 10) {
-  const d = new Date();
-  d.setSeconds(0, 0);
-  const min = d.getMinutes();
-  const rounded = Math.ceil(min / step) * step;
-  d.setMinutes(rounded);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mi = String(d.getMinutes()).padStart(2, "0");
-  return { date: `${yyyy}-${mm}-${dd}`, time: `${hh}:${mi}` };
+function fmtMaybe(dt?: string) {
+  return dt ? fmt(dt) : "Sem data definida";
 }
 
-export default function PatientDetailsModal({
-  open,
-  onClose,
-  patient,
-}: {
+function sumFractions(r: Replacement | null) {
+  if (!r) return 0;
+  return r.completedFractions.reduce((s, f) => s + f.duration, 0);
+}
+
+function isFull(r: Replacement) {
+  return sumFractions(r) >= (r.totalDuration || 50);
+}
+
+/* ---------- Wrapper sem hooks condicionais ---------- */
+type Props = {
   open: boolean;
   onClose: () => void;
   patient: Patient | null;
+};
+
+export default function PatientDetailsModal({ open, onClose, patient }: Props) {
+  if (!open || !patient) return null;
+  return <PatientDetailsModalInner patient={patient} onClose={onClose} />;
+}
+
+/* ---------- Componente real do modal ---------- */
+function PatientDetailsModalInner({
+  patient,
+  onClose,
+}: {
+  patient: Patient;
+  onClose: () => void;
 }) {
-  const add10 = useBoard((s) => s.addPartial10);
-  const full50 = useBoard((s) => s.completeFull50);
   const getActive = useBoard((s) => s.getActiveReplacement);
   const getPending = useBoard((s) => s.getPendingMinutes);
+  const add10 = useBoard((s) => s.addPartial10);
+  const add50 = useBoard((s) => s.completeFull50);
 
-  const active = patient ? getActive(patient) : null;
-  const pending = patient ? getPending(patient) : 0;
-  const done = active ? active.completedFractions.reduce((s, f) => s + f.duration, 0) : 0;
+  const [tab, setTab] = useState<"current" | "history">("current");
+  const [openReplacement, setOpenReplacement] = useState(false);
+
+  const active = getActive(patient);
+  const pending = getPending(patient);
+  const done = sumFractions(active);
+
   const pct = useMemo(
-    () => (active ? Math.round((done / (active.totalDuration || 50)) * 100) : 0),
+    () =>
+      active ? Math.round((done / (active.totalDuration || 50)) * 100) : 0,
     [active, done]
   );
 
-  // 🔒 Se já houve qualquer parcial, não pode concluir direto 50
-  const hasPartial = (active?.completedFractions?.length || 0) > 0;
+  const fullSessions = patient.replacements.filter((r) => isFull(r));
+  const partialSessions = patient.replacements.filter((r) => !isFull(r));
 
-  // Campos de data/hora escolhidos pelo usuário para adicionar +10
-  const initial = nextRoundedTime();
-  const [date, setDate] = useState(initial.date);
-  const [time, setTime] = useState(initial.time);
-
-  if (!open || !patient) return null;
-
-  const onAdd10 = () => {
-    if (!date || !time) return;
-    const iso = new Date(`${date}T${time}:00`).toISOString();
-    add10(patient.id, iso);
-  };
-
-  const onCloseSession = () => {
-    // será bloqueado no store se já houver parcial, mas também desabilitamos no UI
-    full50(patient.id);
-    onClose();
-  };
+  const renderFractions = (fractions: Fraction[]) =>
+    fractions.length ? (
+      <ul className="mt-2 space-y-1 text-sm">
+        {fractions.map((f) => (
+          <li
+            key={f.id}
+            className="flex items-center justify-between rounded bg-slate-50 px-2 py-1 dark:bg-slate-800"
+          >
+            <span>{fmt(f.at)}</span>
+            <span>+{f.duration} min</span>
+          </li>
+        ))}
+      </ul>
+    ) : (
+      <p className="text-sm text-slate-500">Nenhuma fração registrada.</p>
+    );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-[min(92vw,640px)] rounded-xl bg-white p-5 shadow-xl dark:bg-tdark-card">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-trello-text dark:text-tdark-text">
-            {patient.name}
-          </h3>
-          <button
-            onClick={onClose}
-            className="rounded px-2 py-1 text-sm text-slate-600 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-white/10"
-          >
-            ✕
-          </button>
-        </div>
+    <>
+      {/* Modal do PACIENTE – só aparece quando NÃO estamos criando reposição */}
+      {!openReplacement && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
+          <div className="w-[min(96vw,720px)] bg-white dark:bg-tdark-card rounded-xl p-6 shadow-xl">
+            {/* HEADER */}
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">{patient.name}</h2>
+                <p className="text-sm text-slate-500">
+                  Contato: {patient.contact || "—"}
+                </p>
+              </div>
 
-        <div className="text-sm text-trello-muted dark:text-tdark-muted mb-3">
-          Contato: {patient.contact || "—"} • Prof.: {patient.mainProfessional || "—"}
-        </div>
-
-        {/* Progresso */}
-        <div className="mb-4">
-          <div className="flex justify-between text-xs text-slate-600 dark:text-slate-300 mb-1">
-            <span>Progresso da sessão</span>
-            <span>{done} / 50 min</span>
-          </div>
-          <div className="h-2 rounded bg-slate-200 dark:bg-white/10 overflow-hidden">
-            <div className="h-full bg-sky-600 dark:bg-sky-400" style={{ width: `${pct}%` }} />
-          </div>
-          <div className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-            Restantes: {pending} min
-          </div>
-        </div>
-
-        {/* Frações (histórico) */}
-        <div className="mb-4">
-          <div className="font-medium text-trello-text dark:text-tdark-text mb-2">
-            Reposições parciais (10 em 10)
-          </div>
-          {active?.completedFractions?.length ? (
-            <ul className="space-y-1 text-sm">
-              {active.completedFractions.map((f) => (
-                <li
-                  key={f.id}
-                  className="flex items-center justify-between rounded bg-slate-50 px-2 py-1 dark:bg-white/5"
-                >
-                  <span className="text-slate-700 dark:text-slate-200">{fmt(f.at)}</span>
-                  <span className="text-slate-600 dark:text-slate-300">+{f.duration} min</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="text-sm text-slate-500 dark:text-slate-400">
-              Nenhuma fração registrada.
+              <button
+                onClick={onClose}
+                className="rounded px-3 py-1 text-sm hover:bg-slate-200"
+              >
+                ✕
+              </button>
             </div>
-          )}
-        </div>
 
-        {/* Adicionar fração com DATA/HORA escolhidas */}
-        <div className="mb-4 grid grid-cols-2 gap-3">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-              Data da parcial (+10)
-            </label>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="w-full rounded border border-slate-300 px-3 py-2 outline-none focus:ring
-                         bg-white text-trello-text dark:border-slate-600 dark:bg-tdark-list dark:text-tdark-text"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-              Hora da parcial (+10)
-            </label>
-            <input
-              type="time"
-              value={time}
-              step={60}
-              onChange={(e) => setTime(e.target.value)}
-              className="w-full rounded border border-slate-300 px-3 py-2 outline-none focus:ring
-                         bg-white text-trello-text dark:border-slate-600 dark:bg-tdark-list dark:text-tdark-text"
-            />
-          </div>
-        </div>
+            {/* BOTÃO: NOVA REPOSIÇÃO */}
+            <button
+              onClick={() => setOpenReplacement(true)}
+              className="mb-4 bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700"
+            >
+              ➕ Nova reposição
+            </button>
 
-        {/* Ações */}
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onCloseSession}
-            disabled={hasPartial}  // 🔒 desabilita se já houver parcial
-            title={hasPartial ? "Indisponível: já existem parciais registradas" : ""}
-            className={`rounded px-3 py-2 text-sm border
-              ${hasPartial
-                ? "border-slate-300 text-slate-400 cursor-not-allowed dark:border-slate-700"
-                : "border-slate-300 hover:bg-slate-100 dark:border-slate-600 dark:hover:bg-white/10"}
-            `}
-          >
-            Concluir sessão (50 min)
-          </button>
-          <button onClick={onAdd10} className="btn-primary">
-            Adicionar +10 min
-          </button>
+            {/* ABAS */}
+            <div className="flex gap-3 border-b mb-4 pb-1">
+              <button
+                onClick={() => setTab("current")}
+                className={`px-3 py-1 ${
+                  tab === "current" ? "border-b-2 border-blue-500" : ""
+                }`}
+              >
+                Sessão ativa
+              </button>
+              <button
+                onClick={() => setTab("history")}
+                className={`px-3 py-1 ${
+                  tab === "history" ? "border-b-2 border-blue-500" : ""
+                }`}
+              >
+                Histórico
+              </button>
+            </div>
+
+            {/* CONTEÚDO */}
+            {tab === "current" ? (
+              active ? (
+                <>
+                  <div className="border rounded-lg p-4">
+                    <p>
+                      <span className="font-medium">Agendada: </span>
+                      {fmtMaybe(active.scheduledAt)}
+                    </p>
+
+                    <p className="mt-1">
+                      <span className="font-medium">Total: </span>
+                      {active.totalDuration} min
+                    </p>
+
+                    {/* PROGRESSO */}
+                    <div className="mt-2">
+                      <div className="flex justify-between text-xs">
+                        <span>{done} min feitos</span>
+                        <span>{pending} min pendentes</span>
+                      </div>
+
+                      <div className="h-2 bg-slate-200 rounded-full mt-1">
+                        <div
+                          className="h-full bg-green-600 rounded-full"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* AÇÕES */}
+                    {!active.closed && (
+                      <div className="flex gap-2 mt-4">
+                        {pending > 0 && (
+                          <button
+                            onClick={() =>
+                              add10(patient.id, new Date().toISOString())
+                            }
+                            className="bg-blue-600 text-white px-3 py-1 rounded"
+                          >
+                            +10 min
+                          </button>
+                        )}
+
+                        {!isFull(active) && (
+                          <button
+                            onClick={() =>
+                              add50(patient.id, new Date().toISOString())
+                            }
+                            className="bg-green-600 text-white px-3 py-1 rounded"
+                          >
+                            Completar sessão (50)
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="mt-4">
+                      <p className="font-medium">Frações</p>
+                      {renderFractions(active.completedFractions)}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p>Nenhuma sessão ativa.</p>
+              )
+            ) : (
+              <div className="max-h-[50vh] overflow-y-auto space-y-3">
+                {/* COMPLETAS */}
+                <div>
+                  <h3 className="font-semibold">Sessões completas</h3>
+                  {fullSessions.map((r) => (
+                    <div key={r.id} className="p-3 border rounded-lg mt-2">
+                      <p>Agendada: {fmtMaybe(r.scheduledAt)}</p>
+                      <p>Total: {r.totalDuration} min</p>
+                      <p className="font-medium mt-2">Frações:</p>
+                      {renderFractions(r.completedFractions)}
+                    </div>
+                  ))}
+                  {!fullSessions.length && <p>Nenhuma sessão completa.</p>}
+                </div>
+
+                {/* PARCIAIS */}
+                <div>
+                  <h3 className="font-semibold">Sessões parciais</h3>
+                  {partialSessions.map((r) => (
+                    <div key={r.id} className="p-3 border rounded-lg mt-2">
+                      <p>Agendada: {fmtMaybe(r.scheduledAt)}</p>
+                      <p className="font-medium mt-2">Frações:</p>
+                      {renderFractions(r.completedFractions)}
+                    </div>
+                  ))}
+                  {!partialSessions.length && (
+                    <p>Nenhuma sessão parcial.</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-    </div>
+      )}
+
+      {/* MODAL DE NOVA REPOSIÇÃO
+          Quando openReplacement = true, só este fica visível, sem o modal de paciente atrás */}
+      <AddReplacementModal
+        open={openReplacement}
+        onClose={() => setOpenReplacement(false)}
+        patientId={patient.id}
+      />
+    </>
   );
 }
