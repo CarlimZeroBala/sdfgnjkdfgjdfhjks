@@ -4,9 +4,9 @@ export type Fraction = { id: string; at: string; duration: number }; // 10 min n
 export type Replacement = {
   id: string;
   scheduledAt?: string;
-  totalDuration: number;          // sempre 50
+  totalDuration: number; // sempre 50
   completedFractions: Fraction[]; // soma até 50
-  closed?: boolean;               // sessão encerrada
+  closed?: boolean; // sessão encerrada
 };
 export type Patient = {
   id: string;
@@ -25,6 +25,24 @@ type Catalog = {
   professionals: { id: string; name: string; specialty: string }[];
 };
 
+type NewPatientFromDb = {
+  id: string;
+  name: string;
+  contact?: string | null;
+  mainProfessional?: string | null;
+  listId?: number | null;
+};
+
+type ReplacementRowFromDb = {
+  id: string;
+  patient_id: string;
+  kind?: "full" | "partial" | null;
+  minutes?: number | null;
+  scheduled_for?: string | null;
+  status?: string | null;
+  list_id?: number | null;
+};
+
 type State = {
   board: Board;
   filter: string;
@@ -32,6 +50,7 @@ type State = {
 
   setFilter: (q: string) => void;
 
+  /** Fluxo antigo baseado em catálogo estático */
   addPatientByIds: (args: {
     listId: number;
     professionalId: string;
@@ -39,6 +58,14 @@ type State = {
     mode: "full" | "partial";
     partialAt?: string; // obrigatório quando mode = partial
   }) => void;
+
+  /**
+   * Novos helpers integrados ao Supabase:
+   * - addPatient: recebe o registro retornado pelo insert da tabela patients
+   * - addReplacementFromDb: recebe o registro retornado pelo insert da tabela replacements
+   */
+  addPatient: (patientFromDb: NewPatientFromDb) => void;
+  addReplacementFromDb: (replacementFromDb: ReplacementRowFromDb) => void;
 
   addPartial10: (patientId: string, atISO: string) => void;
   completeFull50: (patientId: string, atISO?: string) => void;
@@ -75,11 +102,14 @@ export const useBoard = create<State>((set, get) => ({
 
   setFilter: (q) => set({ filter: q }),
 
+  /** Fluxo antigo, usando catálogo estático (mantido para compatibilidade) */
   addPatientByIds: ({ listId, professionalId, patientId, mode, partialAt }) =>
     set((state) => {
       const { catalog, board } = state;
       const patientInfo = catalog.patients.find((p) => p.id === patientId);
-      const profInfo = catalog.professionals.find((r) => r.id === professionalId);
+      const profInfo = catalog.professionals.find(
+        (r) => r.id === professionalId
+      );
       if (!patientInfo || !profInfo) return state;
 
       // base da reposição
@@ -127,6 +157,115 @@ export const useBoard = create<State>((set, get) => ({
       );
 
       return { board: { ...board, lists } };
+    }),
+
+  /**
+   * Novo fluxo: adiciona um paciente retornado pelo Supabase
+   * (tabela "patients") ao board, normalmente na lista 1 (pendentes).
+   */
+  addPatient: (patientFromDb) =>
+    set((state) => {
+      const boardClone: Board = structuredClone(state.board);
+      const targetListId = patientFromDb.listId ?? 1;
+
+      const targetList =
+        boardClone.lists.find((l) => l.id === targetListId) ??
+        boardClone.lists[0];
+
+      if (!targetList) {
+        return { board: boardClone };
+      }
+
+      const newPatient: Patient = {
+        id: patientFromDb.id,
+        name: patientFromDb.name,
+        contact: patientFromDb.contact ?? undefined,
+        mainProfessional: patientFromDb.mainProfessional ?? undefined,
+        replacements: [],
+      };
+
+      // evita duplicar paciente com mesmo id
+      if (!targetList.patients.some((p) => p.id === newPatient.id)) {
+        targetList.patients.push(newPatient);
+      }
+
+      const updatedCatalogPatients = [
+        ...state.catalog.patients.filter((p) => p.id !== patientFromDb.id),
+        {
+          id: patientFromDb.id,
+          name: patientFromDb.name,
+          contact: patientFromDb.contact ?? "",
+        },
+      ];
+
+      return {
+        board: boardClone,
+        catalog: { ...state.catalog, patients: updatedCatalogPatients },
+      };
+    }),
+
+  /**
+   * Novo fluxo: adiciona uma reposição criada no Supabase
+   * (registro da tabela "replacements") ao paciente correspondente.
+   */
+  addReplacementFromDb: (row) =>
+    set((state) => {
+      const b: Board = structuredClone(state.board);
+      const patientId = row.patient_id;
+      if (!patientId) return { board: b };
+
+      let foundPatient: Patient | undefined;
+
+      for (const list of b.lists) {
+        const p = list.patients.find((pp) => pp.id === patientId);
+        if (p) {
+          foundPatient = p;
+          break;
+        }
+      }
+
+      if (!foundPatient) {
+        // paciente ainda não foi colocado no board
+        return { board: b };
+      }
+
+      const at = row.scheduled_for ?? new Date().toISOString();
+      const kind: "full" | "partial" =
+        row.kind === "partial" ? "partial" : "full";
+
+      const minutes =
+        typeof row.minutes === "number" && row.minutes > 0
+          ? row.minutes
+          : kind === "full"
+          ? 50
+          : 10;
+
+      const totalDuration = 50;
+      const completedFractions: Fraction[] = [
+        {
+          id: uid(),
+          at,
+          duration: minutes,
+        },
+      ];
+
+      const done = minutes;
+      const closed = kind === "full" && done >= totalDuration;
+
+      const replacement: Replacement = {
+        id: row.id,
+        scheduledAt: at,
+        totalDuration,
+        completedFractions,
+        closed,
+      };
+
+      if (!foundPatient.replacements) {
+        foundPatient.replacements = [];
+      }
+      foundPatient.replacements.push(replacement);
+
+      return { board: b };
     }),
 
   getActiveReplacement: (p) => {
@@ -197,7 +336,9 @@ export const useBoard = create<State>((set, get) => ({
   movePatient: (patientId, toListId, toIndex) =>
     set((state) => {
       const b: Board = structuredClone(state.board);
-      const fromList = b.lists.find((l) => l.patients.some((p) => p.id === patientId));
+      const fromList = b.lists.find((l) =>
+        l.patients.some((p) => p.id === patientId)
+      );
       if (!fromList) return { board: b };
       const i = fromList.patients.findIndex((p) => p.id === patientId);
       const patient = fromList.patients.splice(i, 1)[0];

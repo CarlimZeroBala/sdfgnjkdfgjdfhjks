@@ -7,16 +7,14 @@ type Props = {
   onCreated?: (row: any) => void;
 };
 
-export default function AddPatientModal({ open, onClose, onCreated }: Props) {
+export default function AddProfessionalModal({ open, onClose, onCreated }: Props) {
   const [name, setName] = useState("");
-  const [contact, setContact] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setName("");
-    setContact("");
     setIsSubmitting(false);
     setErrorMsg(null);
   }, [open]);
@@ -35,26 +33,25 @@ export default function AddPatientModal({ open, onClose, onCreated }: Props) {
     try {
       const payload = {
         name: name.trim(),
-        phone: contact.trim(), // coluna correta no Supabase
       };
 
       const { data, error } = await supabase
-        .from("patients")
+        .from("professionals")
         .insert(payload)
         .select("*")
         .single();
 
       if (error) {
-        console.error("Erro Supabase ao criar paciente:", error);
+        console.error("Erro Supabase ao criar profissional:", error);
         throw error;
       }
 
       onCreated?.(data);
       onClose();
     } catch (err: any) {
-      console.error("Erro geral ao salvar paciente:", err);
+      console.error("Erro geral ao salvar profissional:", err);
       setErrorMsg(
-        `Erro ao salvar paciente. ${
+        `Erro ao salvar profissional. ${
           err?.message ? `(${err.message})` : "Tente novamente."
         }`
       );
@@ -70,9 +67,9 @@ export default function AddPatientModal({ open, onClose, onCreated }: Props) {
         {/* Cabeçalho */}
         <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-slate-700">
           <div>
-            <h2 className="text-2xl font-semibold">Novo paciente</h2>
+            <h2 className="text-2xl font-semibold">Novo profissional</h2>
             <p className="mt-1 text-sm text-slate-400">
-              Cadastre um paciente para organizar suas reposições.
+              Cadastre um profissional para vincular às reposições.
             </p>
           </div>
           <button
@@ -88,33 +85,18 @@ export default function AddPatientModal({ open, onClose, onCreated }: Props) {
           {/* Nome */}
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-200">
-              Nome do paciente
+              Nome do profissional
             </label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-sky-500"
-              placeholder="Ex.: Maria Silva"
+              placeholder="Ex.: Maria Terapeuta"
               required
             />
           </div>
 
-          {/* Contato */}
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-200">
-              Telefone / forma de contato
-            </label>
-            <input
-              value={contact}
-              onChange={(e) => setContact(e.target.value)}
-              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-sky-500"
-              placeholder="Telefone, WhatsApp, e-mail..."
-            />
-          </div>
-
-          {errorMsg && (
-            <p className="text-sm text-rose-400">{errorMsg}</p>
-          )}
+          {errorMsg && <p className="text-sm text-rose-400">{errorMsg}</p>}
 
           {/* Rodapé */}
           <div className="mt-4 flex items-center justify-end gap-3 border-t border-slate-800 pt-4">
@@ -132,7 +114,7 @@ export default function AddPatientModal({ open, onClose, onCreated }: Props) {
               disabled={!canSave}
               className="rounded-lg bg-sky-600 px-5 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {isSubmitting ? "Salvando..." : "Criar paciente"}
+              {isSubmitting ? "Salvando..." : "Criar profissional"}
             </button>
           </div>
         </form>
